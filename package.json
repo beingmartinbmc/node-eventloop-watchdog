@@ -34,6 +34,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "git+https://github.com/beingmartinbmc/node-eventloop-watchdog.git"
   }
 }
