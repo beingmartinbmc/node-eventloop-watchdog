@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "node test/index.test.js",
-    "test:coverage": "npx c8 --100 --reporter=text --reporter=html node test/index.test.js"
+    "test:coverage": "c8 --reporter=text --reporter=html node test/index.test.js",
+    "prepublishOnly": "npm test"
   },
   "devDependencies": {
     "c8": "^8.0.0"
@@ -19,9 +20,13 @@
     "diagnostics",
     "latency",
     "watchdog",
-    "production"
+    "production",
+    "nodejs",
+    "observability",
+    "profiler",
+    "debugging"
   ],
-  "author": "",
+  "author": "beingmartinbmc",
   "license": "MIT",
   "engines": {
     "node": ">=16.0.0"
@@ -35,5 +40,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/beingmartinbmc/node-eventloop-watchdog.git"
-  }
+  },
+  "bugs": {
+    "url": "https://github.com/beingmartinbmc/node-eventloop-watchdog/issues"
+  },
+  "homepage": "https://github.com/beingmartinbmc/node-eventloop-watchdog#readme"
 }
