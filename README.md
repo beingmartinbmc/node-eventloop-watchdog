@@ -9,12 +9,12 @@ Detect when the Node.js event loop is blocked and identify the code causing it.
 - ✔ Production safe
 
 ```
-⚠ Event Loop Block Detected
+⚠ Event Loop Blocked
 
   Duration: 142ms
   Route: POST /checkout
 
-  Cause
+  Suspected Blocking Operation
   JSON.stringify large object
 
   Location
@@ -183,7 +183,7 @@ Identifies what caused the block:
 | `crypto.pbkdf2Sync`, `crypto.scryptSync` | Sync Crypto |
 | `zlib.*Sync` | Sync Compression |
 | `child_process.execSync`, `spawnSync` | Sync Exec |
-| `RegExp.exec`, `String.match` | Regex Backtracking |
+| `RegExp.exec` | Regex Backtracking |
 
 ## Express / Fastify Middleware
 
@@ -201,7 +201,7 @@ app.post('/checkout', (req, res) => {
 });
 ```
 
-Works with Express, Fastify, Koa (via adapter), and any Connect-compatible framework.
+Works with Express, Fastify, and any Connect-compatible framework. Koa requires an adapter.
 
 ## Integration with node-request-trace
 
