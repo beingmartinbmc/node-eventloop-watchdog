@@ -1,0 +1,39 @@
+{
+  "name": "node-eventloop-watchdog",
+  "version": "1.0.0",
+  "description": "Lightweight Node.js event loop blocking detector with automatic code identification, blocking heatmaps, and production-safe diagnostics",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/index.test.js",
+    "test:coverage": "npx c8 --100 --reporter=text --reporter=html node test/index.test.js"
+  },
+  "devDependencies": {
+    "c8": "^8.0.0"
+  },
+  "keywords": [
+    "event-loop",
+    "blocking",
+    "detection",
+    "monitor",
+    "performance",
+    "diagnostics",
+    "latency",
+    "watchdog",
+    "production"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "index.js",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
