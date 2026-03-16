@@ -6,10 +6,8 @@ class MetricsCollector {
     this._totalLag = 0;
     this._maxLag = 0;
     this._minLag = Infinity;
-    this._blocksLastMinute = 0;
     this._minuteBlocks = [];
     this._startTime = Date.now();
-    this._lastCheck = 0;
     this._lagSamples = [];
     this._maxSamples = 600;
   }
@@ -22,12 +20,6 @@ class MetricsCollector {
     if (lagMs < this._minLag) this._minLag = lagMs;
 
     this._minuteBlocks.push(now);
-    this._lagSamples.push({ lag: lagMs, time: now });
-
-    if (this._lagSamples.length > this._maxSamples) {
-      this._lagSamples.shift();
-    }
-
     this._pruneMinuteBlocks(now);
   }
 
@@ -37,7 +29,6 @@ class MetricsCollector {
     if (this._lagSamples.length > this._maxSamples) {
       this._lagSamples.shift();
     }
-    this._lastCheck = now;
   }
 
   _pruneMinuteBlocks(now) {

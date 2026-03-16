@@ -2,6 +2,13 @@
 
 const path = require('path');
 
+function normalizePath(file) {
+  return typeof file === 'string' ? file.replace(/\\/g, '/') : '';
+}
+
+const PACKAGE_SOURCE_ROOT = normalizePath(__dirname);
+const PACKAGE_ENTRY_FILE = normalizePath(path.resolve(__dirname, '..', 'index.js'));
+
 const INTERNAL_PATTERNS = [
   'node:internal/',
   'node:',
@@ -96,10 +103,17 @@ function parseFrame(line) {
 }
 
 function isInternalFrame(frame) {
+  const file = normalizePath(frame && frame.file);
+  if (!file) return false;
+
   for (const pattern of INTERNAL_PATTERNS) {
-    if (frame.file.includes(pattern)) return true;
+    if (file.includes(pattern)) return true;
   }
-  if (frame.file.startsWith('node:')) return true;
+
+  if (file === PACKAGE_ENTRY_FILE) return true;
+  if (file.startsWith(`${PACKAGE_SOURCE_ROOT}/`)) return true;
+  if (file.startsWith('node:')) return true;
+
   return false;
 }
 
