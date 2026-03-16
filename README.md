@@ -1,12 +1,12 @@
 # node-eventloop-watchdog
 
-Detect when the Node.js event loop is blocked and identify the code causing it.
+Detect when the Node.js event loop is lagging and capture best-effort context about what was happening when the lag was observed.
 
-- ✔ Detect event loop lag
-- ✔ Capture blocking stack traces
-- ✔ Identify blocking hotspots
-- ✔ Correlate with HTTP requests
-- ✔ Production safe
+- Detect event loop lag
+- Capture stack context at detection time
+- Highlight likely blocking patterns
+- Correlate with HTTP requests
+- Zero runtime dependencies
 
 ```
 ⚠ Event Loop Blocked
@@ -15,33 +15,29 @@ Detect when the Node.js event loop is blocked and identify the code causing it.
   Route: POST /checkout
 
   Suspected Blocking Operation
-  JSON.stringify large object
+  JSON.stringify
 
   Location
   checkoutService.js:84
 ```
 
+## Important Attribution Note
+
+Lag is detected after the event loop resumes. That means stack traces, `location`, `userFrame`, and hotspots are best-effort context captured at detection time.
+
+They are useful for pattern hints, request correlation, and narrowing down suspicious areas, but they do not guarantee exact blame attribution for the original blocking line.
+
 ## Blocking Hotspots
 
-Find which files repeatedly block the event loop — ranked by frequency.
+Rank user-code locations seen in captured stack context when lag is observed.
 
-```
-Top Blocking Files
-
-1. reportService.js:142
-   Blocks: 18
-   Max Lag: 221ms
-
-2. orderController.js:51
-   Blocks: 7
-   Max Lag: 94ms
-```
+Results are best-effort and may be empty when no non-internal user frame is available.
 
 ```js
 watchdog.getBlockingHotspots();
 // [
-//   { file: "reportService.js", line: 142, blocks: 18, maxLag: 221 },
-//   { file: "orderController.js", line: 51, blocks: 7, maxLag: 94 }
+//   { file: 'reportService.js', line: 142, blocks: 18, maxLag: 221, avgLag: 145 },
+//   { file: 'orderController.js', line: 51, blocks: 7, maxLag: 94, avgLag: 62 }
 // ]
 ```
 
@@ -51,6 +47,8 @@ watchdog.getBlockingHotspots();
 npm install node-eventloop-watchdog
 ```
 
+Bundled TypeScript types are included.
+
 ## Quick Start
 
 ```js
@@ -59,7 +57,18 @@ const watchdog = require('node-eventloop-watchdog');
 watchdog.start();
 ```
 
-That's it. Warnings are logged automatically when the event loop is blocked.
+Warnings are logged automatically when lag crosses the configured threshold.
+
+## Examples
+
+```bash
+node examples/basic.js
+```
+
+```bash
+npm install express
+node examples/express.js
+```
 
 ## Configuration
 
@@ -83,7 +92,7 @@ watchdog.start({
 |---|---|---|---|
 | `warningThreshold` | number | `50` | Lag (ms) before warning |
 | `criticalThreshold` | number | `100` | Lag (ms) before critical alert |
-| `captureStackTrace` | boolean | `true` | Capture stack traces |
+| `captureStackTrace` | boolean | `true` | Capture stack context on block |
 | `historySize` | number | `50` | Max blocking events retained |
 | `enableMetrics` | boolean | `true` | Collect lag metrics and memory snapshots |
 | `detectBlockingPatterns` | boolean | `true` | Detect known blocking patterns |
@@ -92,6 +101,8 @@ watchdog.start({
 | `jsonLogs` | boolean | `false` | JSON log output |
 | `logger` | function | `null` | Custom logger function |
 | `onBlock` | function | `null` | Block event callback |
+
+When `enableMetrics` is `false`, lag and memory metrics are not collected. `getStats()` still returns runtime state, but lag-related fields are omitted.
 
 ## API
 
@@ -115,6 +126,8 @@ watchdog.getStats();
 // }
 ```
 
+When `enableMetrics` is `false`, lag fields and memory snapshots are omitted.
+
 ### `watchdog.getRecentBlocks(count?)`
 
 ```js
@@ -132,6 +145,8 @@ watchdog.getRecentBlocks(5);
 ```
 
 ### `watchdog.getBlockingHotspots(limit?)`
+
+Best-effort hotspot ranking from captured stack context.
 
 ```js
 watchdog.getBlockingHotspots();
@@ -151,11 +166,11 @@ Clear all history, hotspots, and metrics.
 
 ### `watchdog.middleware()`
 
-Express/Fastify-compatible middleware for request correlation.
+Return Connect / Express-style middleware for request correlation.
 
 ### `watchdog.on(event, listener)` / `watchdog.off(event, listener)`
 
-Subscribe/unsubscribe to `'block'` events.
+Subscribe or unsubscribe to `'block'` events.
 
 ```js
 watchdog.on('block', (event) => {
@@ -165,16 +180,16 @@ watchdog.on('block', (event) => {
 
 ### `watchdog.createInspector()`
 
-Create an independent instance (not the singleton).
+Create an independent instance instead of using the singleton.
 
 ```js
 const custom = watchdog.createInspector();
 custom.start({ warningThreshold: 100 });
 ```
 
-## Automatic Blocking Detection
+## Blocking Pattern Hints
 
-Identifies what caused the block:
+Identifies likely blocking patterns from captured stack context:
 
 | Pattern | Category |
 |---|---|
@@ -185,27 +200,29 @@ Identifies what caused the block:
 | `child_process.execSync`, `spawnSync` | Sync Exec |
 | `RegExp.exec` | Regex Backtracking |
 
-## Express / Fastify Middleware
+## Request Correlation Middleware
 
 ```js
 const express = require('express');
 const watchdog = require('node-eventloop-watchdog');
 
 const app = express();
+
 watchdog.start();
 app.use(watchdog.middleware());
 
 app.post('/checkout', (req, res) => {
-  // Block events will include: { route: 'POST /checkout', requestId: '...' }
   res.json({ ok: true });
 });
 ```
 
-Works with Express, Fastify, and any Connect-compatible framework. Koa requires an adapter.
+The bundled middleware is Connect / Express-style.
+
+For Fastify, Koa, or native `http`, use an adapter or a separate request-correlation layer.
 
 ## Integration with node-request-trace
 
-If [node-request-trace](https://www.npmjs.com/package/node-request-trace) is installed, blocking events are automatically correlated with the active request — no setup needed.
+If [node-request-trace](https://www.npmjs.com/package/node-request-trace) is installed, blocking events are automatically correlated with the active request with no extra setup.
 
 ```js
 // Blocking events include:
@@ -286,18 +303,22 @@ watchdog.start({
 });
 ```
 
-**Performance:**
+## Operational Notes
 
-- **< 1% CPU** — timer-based polling, no monkey-patching
-- **< 5MB memory** — bounded history and sample buffers
-- **Zero dependencies** — only Node.js built-ins
-- **Unref'd timers** — won't keep the process alive
+- Timer-based polling with no monkey-patching
+- Bounded history and lag sample buffers
+- Zero runtime dependencies
+- Unref'd timers do not keep the process alive
+- Overhead depends on workload and config
+- Run `npm run bench` to measure overhead in your environment
 
 ## Compatibility
 
 - **Node.js** >= 16.0.0
-- **Frameworks**: Express, Fastify, Koa, native `http`
-- **OS**: Linux, macOS, Windows
+- **Core monitoring** works in any Node.js app
+- **Bundled middleware** is Connect / Express-style
+- **Fastify, Koa, and native `http`** need adapters if you want request correlation
+- **OS** Linux, macOS, Windows
 
 ## License
 

@@ -27,7 +27,6 @@ class EventLoopMonitor {
     this._config = { ...DEFAULT_CONFIG };
     this._running = false;
     this._timer = null;
-    this._lastCheck = 0;
     this._history = new BlockingHistory(this._config.historySize);
     this._hotspots = new HotspotTracker();
     this._metrics = new MetricsCollector();
@@ -47,7 +46,6 @@ class EventLoopMonitor {
     this._logger = new Logger(this._config);
     this._requestCorrelation.enable();
     this._running = true;
-    this._lastCheck = this._hrtime();
 
     this._scheduleCheck();
 

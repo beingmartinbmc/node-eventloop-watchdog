@@ -416,21 +416,18 @@ suite('MetricsCollector', () => {
     assert.strictEqual(m._minuteBlocks.length, 1);
   });
 
-  test('recordBlock caps lagSamples at maxSamples', () => {
+  test('recordBlock does not add duplicate lag samples', () => {
     const m = new MetricsCollector();
-    m._maxSamples = 3;
     m.recordBlock(10);
     m.recordBlock(20);
-    m.recordBlock(30);
-    m.recordBlock(40);
-    assert.strictEqual(m._lagSamples.length, 3);
+    assert.strictEqual(m._lagSamples.length, 0);
   });
 
-  test('recordLagSample stores sample and updates lastCheck', () => {
+  test('recordLagSample stores sample', () => {
     const m = new MetricsCollector();
     m.recordLagSample(5);
     assert.strictEqual(m._lagSamples.length, 1);
-    assert.ok(m._lastCheck > 0);
+    assert.strictEqual(m._lagSamples[0].lag, 5);
   });
 
   test('recordLagSample caps samples at maxSamples', () => {
@@ -453,6 +450,8 @@ suite('MetricsCollector', () => {
 
   test('getStats computes avgLag from recent samples', () => {
     const m = new MetricsCollector();
+    m.recordLagSample(60);
+    m.recordLagSample(100);
     m.recordBlock(60);
     m.recordBlock(100);
     const stats = m.getStats();
@@ -587,6 +586,10 @@ suite('Stack Trace', () => {
 
   test('isInternalFrame detects node_modules/node-eventloop-watchdog', () => {
     assert.strictEqual(st.isInternalFrame({ file: '/app/node_modules/node-eventloop-watchdog/src/monitor.js' }), true);
+  });
+
+  test('isInternalFrame detects local package source path', () => {
+    assert.strictEqual(st.isInternalFrame({ file: path.resolve(__dirname, '../src/monitor.js') }), true);
   });
 
   test('isInternalFrame detects <anonymous>', () => {
@@ -1639,6 +1642,32 @@ suite('Integration: blocking detection', () => {
     const criticalBlocks = blocks.filter(b => b.severity === 'critical');
     assert.ok(criticalBlocks.length > 0, 'Should have at least one critical block');
   });
+
+  asyncTest('does not attribute real block to watchdog internals', async () => {
+    const EventLoopMonitor = require('../src/monitor');
+    const monitor = new EventLoopMonitor();
+
+    const blocks = [];
+    monitor.start({
+      warningThreshold: 10,
+      criticalThreshold: 30,
+      captureStackTrace: true,
+      detectBlockingPatterns: true,
+      enableMetrics: true,
+      logLevel: 'silent',
+      onBlock: (event) => blocks.push(event)
+    });
+
+    const start = Date.now();
+    while (Date.now() - start < 80) {}
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    monitor.stop();
+
+    assert.ok(blocks.length > 0, 'Should have detected at least one block');
+    assert.strictEqual(blocks.some(b => typeof b.location === 'string' && /^monitor\.js:\d+$/.test(b.location)), false);
+    assert.strictEqual(blocks.some(b => b.userFrame && /\/src\/monitor\.js$/.test(b.userFrame.file)), false);
+  });
 });
 
 // ============================================================
@@ -1662,7 +1691,12 @@ suite('Actuator (mock success path)', () => {
       return origResolve.call(this, request, parent);
     };
     const origCache = require.cache['node-actuator-lite'];
-    require.cache['node-actuator-lite'] = { exports: mockActuator };
+    require.cache['node-actuator-lite'] = {
+      id: 'node-actuator-lite',
+      filename: 'node-actuator-lite',
+      loaded: true,
+      exports: mockActuator
+    };
 
     // Clear cached actuator module so it re-requires
     const actuatorPath = require.resolve('../src/actuator');
@@ -1720,7 +1754,12 @@ suite('Actuator (mock success path)', () => {
       if (request === 'node-actuator-lite') return 'node-actuator-lite';
       return origResolve.call(this, request, parent);
     };
-    require.cache['node-actuator-lite'] = { exports: {} }; // no registerEndpoint
+    require.cache['node-actuator-lite'] = {
+      id: 'node-actuator-lite',
+      filename: 'node-actuator-lite',
+      loaded: true,
+      exports: {}
+    };
 
     const actuatorPath = require.resolve('../src/actuator');
     delete require.cache[actuatorPath];
@@ -1742,7 +1781,12 @@ suite('Actuator (mock success path)', () => {
       if (request === 'node-actuator-lite') return 'node-actuator-lite';
       return origResolve.call(this, request, parent);
     };
-    require.cache['node-actuator-lite'] = { exports: null };
+    require.cache['node-actuator-lite'] = {
+      id: 'node-actuator-lite',
+      filename: 'node-actuator-lite',
+      loaded: true,
+      exports: null
+    };
 
     const actuatorPath = require.resolve('../src/actuator');
     delete require.cache[actuatorPath];
@@ -2204,6 +2248,9 @@ suite('index.js actuator error handling', () => {
     // Replace actuator module with one that throws
     delete require.cache[actuatorPath];
     require.cache[actuatorPath] = {
+      id: actuatorPath,
+      filename: actuatorPath,
+      loaded: true,
       exports: {
         registerActuatorEndpoints: () => { throw new Error('actuator boom'); }
       }

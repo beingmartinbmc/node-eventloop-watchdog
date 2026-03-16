@@ -1,5 +1,7 @@
 'use strict';
 
+const { randomUUID } = require('crypto');
+
 function createMiddleware(requestCorrelation) {
   return function eventLoopWatchdogMiddleware(req, res, next) {
     const context = {
@@ -31,6 +33,9 @@ function createMiddleware(requestCorrelation) {
 
 let requestIdCounter = 0;
 function generateRequestId() {
+  if (typeof randomUUID === 'function') {
+    return `req_${randomUUID()}`;
+  }
   return `req_${(++requestIdCounter).toString(36)}_${Date.now().toString(36)}`;
 }
 
