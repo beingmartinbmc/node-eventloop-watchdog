@@ -5,17 +5,26 @@ const { registerActuatorEndpoints } = require('./src/actuator');
 
 const inspector = new EventLoopMonitor();
 
+function tryRegisterActuator(api) {
+  try {
+    registerActuatorEndpoints(api);
+  } catch (e) {
+    // node-actuator-lite not installed, skip
+  }
+}
+
 // Singleton API
 const api = {
   start(config = {}) {
     inspector.start(config);
+    tryRegisterActuator(api);
 
-    // Try registering actuator endpoints
-    try {
-      registerActuatorEndpoints(api);
-    } catch (e) {
-      // node-actuator-lite not installed, skip
-    }
+    return api;
+  },
+
+  protect(config = {}) {
+    inspector.start(EventLoopMonitor.createProtectionConfig(config));
+    tryRegisterActuator(api);
 
     return api;
   },
@@ -71,6 +80,10 @@ const api = {
   // Allow creating independent instances
   createInspector() {
     return new EventLoopMonitor();
+  },
+
+  createProtectionConfig(config = {}) {
+    return EventLoopMonitor.createProtectionConfig(config);
   }
 };
 

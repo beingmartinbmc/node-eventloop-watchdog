@@ -7,8 +7,22 @@ const HotspotTracker = require('./hotspots');
 const MetricsCollector = require('./metrics');
 const RequestCorrelation = require('./request-correlation');
 const Logger = require('./logger');
+const HardWatchdog = require('./hard-watchdog');
+
+const DEFAULT_RECOVERY_CONFIG = {
+  enabled: false,
+  action: 'log',
+  minSeverity: 'critical',
+  hardTimeout: 0,
+  signal: 'SIGTERM',
+  exitCode: 1,
+  webhookUrl: null,
+  webhookTimeout: 500,
+  handler: null
+};
 
 const DEFAULT_CONFIG = {
+  mode: 'observe',
   warningThreshold: 50,
   criticalThreshold: 100,
   captureStackTrace: true,
@@ -19,14 +33,57 @@ const DEFAULT_CONFIG = {
   logger: null,
   logLevel: 'warn',
   jsonLogs: false,
-  onBlock: null
+  onBlock: null,
+  recovery: DEFAULT_RECOVERY_CONFIG
 };
+
+const PROTECT_CONFIG = {
+  mode: 'protect',
+  warningThreshold: 100,
+  criticalThreshold: 500,
+  checkInterval: 50,
+  recovery: {
+    ...DEFAULT_RECOVERY_CONFIG,
+    enabled: true,
+    action: 'kill',
+    hardTimeout: 1000,
+    signal: 'SIGTERM'
+  }
+};
+
+const SEVERITY_RANK = { warning: 1, critical: 2 };
+
+function resolveRecoveryConfig(defaults, override) {
+  if (override === true) return { ...defaults, enabled: true };
+  if (override === false) return { ...defaults, enabled: false };
+  if (override && typeof override === 'object') return { ...defaults, ...override };
+  return { ...defaults };
+}
+
+function createProtectionConfig(config = {}) {
+  const merged = { ...PROTECT_CONFIG, ...config, mode: 'protect' };
+  merged.recovery = resolveRecoveryConfig(PROTECT_CONFIG.recovery, config.recovery);
+  return merged;
+}
+
+function resolveConfig(config = {}) {
+  const preset = config.mode === 'protect' ? PROTECT_CONFIG : {};
+  const recoveryDefaults = preset.recovery || DEFAULT_CONFIG.recovery;
+  const merged = { ...DEFAULT_CONFIG, ...preset, ...config };
+  merged.recovery = resolveRecoveryConfig(recoveryDefaults, config.recovery);
+  return merged;
+}
+
+function meetsSeverity(eventSeverity, minSeverity) {
+  return (SEVERITY_RANK[eventSeverity] || 0) >= (SEVERITY_RANK[minSeverity] || SEVERITY_RANK.critical);
+}
 
 class EventLoopMonitor {
   constructor() {
     this._config = { ...DEFAULT_CONFIG };
     this._running = false;
     this._timer = null;
+    this._hardWatchdog = new HardWatchdog();
     this._history = new BlockingHistory(this._config.historySize);
     this._hotspots = new HotspotTracker();
     this._metrics = new MetricsCollector();
@@ -35,23 +92,30 @@ class EventLoopMonitor {
     this._eventListeners = new Map();
   }
 
+  static createProtectionConfig(config = {}) {
+    return createProtectionConfig(config);
+  }
+
   start(config = {}) {
     if (this._running) {
       this._logger.warn('Monitor is already running');
       return this;
     }
 
-    this._config = { ...DEFAULT_CONFIG, ...config };
+    this._config = resolveConfig(config);
     this._history.setMaxSize(this._config.historySize);
     this._logger = new Logger(this._config);
     this._requestCorrelation.enable();
     this._running = true;
 
+    this._startHardWatchdog();
     this._scheduleCheck();
 
     this._logger.info('Event loop watchdog started', {
+      mode: this._config.mode,
       warningThreshold: this._config.warningThreshold,
-      criticalThreshold: this._config.criticalThreshold
+      criticalThreshold: this._config.criticalThreshold,
+      recoveryAction: this._config.recovery.enabled ? this._config.recovery.action : 'log'
     });
 
     return this;
@@ -65,6 +129,7 @@ class EventLoopMonitor {
       clearTimeout(this._timer);
       this._timer = null;
     }
+    this._hardWatchdog.stop();
     this._requestCorrelation.disable();
     this._logger.info('Event loop watchdog stopped');
 
@@ -96,6 +161,7 @@ class EventLoopMonitor {
         this._onBlockDetected(lag);
       }
 
+      this._hardWatchdog.beat();
       this._scheduleCheck();
     }, this._config.checkInterval);
 
@@ -116,6 +182,8 @@ class EventLoopMonitor {
       severity,
       timestamp
     };
+
+    event.action = this._describeAction(event);
 
     // Capture stack trace
     if (this._config.captureStackTrace) {
@@ -180,13 +248,18 @@ class EventLoopMonitor {
 
     // Emit event
     this._emit('block', event);
+
+    // Act last so listeners and history can observe the event before recovery.
+    this._runRecoveryAction(event);
   }
 
   _logBlockEvent(event) {
+    const actionType = event.action ? event.action.type : 'log';
     const parts = [`\u26a0 Event Loop Blocked\n`];
     parts.push(`  Duration: ${event.duration}ms`);
     parts.push(`  Severity: ${event.severity}`);
     parts.push(`  Threshold: ${event.threshold}ms`);
+    parts.push(`  Action: ${actionType}`);
 
     if (event.request && event.request.route) {
       parts.push(`  Route: ${event.request.route}`);
@@ -208,6 +281,7 @@ class EventLoopMonitor {
       this._logger.error(message, {
         type: 'event-loop-block',
         duration: event.duration,
+        action: actionType,
         route: event.request ? event.request.route : undefined,
         timestamp: Date.now()
       });
@@ -215,10 +289,138 @@ class EventLoopMonitor {
       this._logger.warn(message, {
         type: 'event-loop-block',
         duration: event.duration,
+        action: actionType,
         route: event.request ? event.request.route : undefined,
         timestamp: Date.now()
       });
     }
+  }
+
+  _startHardWatchdog() {
+    const recovery = this._config.recovery;
+    if (!recovery || !recovery.enabled || !recovery.hardTimeout || recovery.hardTimeout <= 0) {
+      return;
+    }
+
+    const started = this._hardWatchdog.start({
+      timeout: recovery.hardTimeout,
+      action: recovery.action,
+      signal: recovery.signal,
+      exitCode: recovery.exitCode,
+      checkInterval: Math.max(25, Math.min(250, Math.floor(recovery.hardTimeout / 4))),
+      name: 'node-eventloop-watchdog'
+    });
+
+    if (!started) {
+      this._logger.warn('Hard watchdog unavailable; continuing with in-process recovery only');
+    }
+  }
+
+  _describeAction(event) {
+    const recovery = this._config.recovery;
+    if (recovery && recovery.enabled && meetsSeverity(event.severity, recovery.minSeverity)) {
+      return {
+        type: recovery.action,
+        reason: `${event.severity}-threshold`,
+        hardTimeout: recovery.hardTimeout || undefined
+      };
+    }
+
+    return {
+      type: 'log',
+      reason: 'observe-mode'
+    };
+  }
+
+  _runRecoveryAction(event) {
+    const recovery = this._config.recovery;
+    if (!recovery || !recovery.enabled || !meetsSeverity(event.severity, recovery.minSeverity)) {
+      return;
+    }
+
+    switch (recovery.action) {
+      case 'callback':
+        this._runRecoveryHandler(event, recovery.handler);
+        break;
+      case 'webhook':
+        this._sendWebhook(event, recovery.webhookUrl, recovery.webhookTimeout);
+        break;
+      case 'exit':
+        this._exitProcess(recovery.exitCode);
+        break;
+      case 'kill':
+        process.kill(process.pid, recovery.signal || 'SIGTERM');
+        break;
+      case 'log':
+      default:
+        break;
+    }
+  }
+
+  _runRecoveryHandler(event, handler) {
+    if (typeof handler !== 'function') return;
+    try {
+      handler(event);
+    } catch (e) {
+      this._logger.error('Recovery handler error', { error: e.message });
+    }
+  }
+
+  _sendWebhook(event, webhookUrl, timeout) {
+    if (!webhookUrl) {
+      this._logger.error('Recovery webhook action configured without webhookUrl');
+      return;
+    }
+
+    let target;
+    try {
+      target = new URL(webhookUrl);
+    } catch (e) {
+      this._logger.error('Invalid recovery webhookUrl', { error: e.message });
+      return;
+    }
+
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+      this._logger.error('Invalid recovery webhook protocol', { protocol: target.protocol });
+      return;
+    }
+
+    const transport = target.protocol === 'https:' ? require('https') : require('http');
+    const body = JSON.stringify({
+      type: 'event-loop-block',
+      event
+    });
+
+    const req = transport.request({
+      method: 'POST',
+      hostname: target.hostname,
+      port: target.port || undefined,
+      path: `${target.pathname}${target.search}`,
+      protocol: target.protocol,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body)
+      }
+    }, (res) => {
+      res.resume();
+    });
+
+    req.on('error', (e) => {
+      this._logger.error('Recovery webhook failed', { error: e.message });
+    });
+
+    req.setTimeout(timeout || 500, () => {
+      req.destroy(new Error('Recovery webhook timed out'));
+    });
+
+    req.write(body);
+    req.end();
+  }
+
+  _exitProcess(exitCode) {
+    process.exitCode = exitCode || 1;
+    this.stop();
+    setImmediate(() => process.exit(process.exitCode));
   }
 
   // --- Public API ---
@@ -228,7 +430,9 @@ class EventLoopMonitor {
     stats.running = this._running;
     stats.config = {
       warningThreshold: this._config.warningThreshold,
-      criticalThreshold: this._config.criticalThreshold
+      criticalThreshold: this._config.criticalThreshold,
+      mode: this._config.mode,
+      recoveryAction: this._config.recovery.enabled ? this._config.recovery.action : 'log'
     };
     if (this._config.enableMetrics) {
       stats.memory = this._metrics.getMemorySnapshot();
@@ -292,7 +496,10 @@ class EventLoopMonitor {
   }
 
   get config() {
-    return { ...this._config };
+    return {
+      ...this._config,
+      recovery: { ...this._config.recovery }
+    };
   }
 }
 
