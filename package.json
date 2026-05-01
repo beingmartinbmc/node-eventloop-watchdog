@@ -1,6 +1,6 @@
 {
   "name": "node-eventloop-watchdog",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Production watchdog that detects Node.js event loop stalls and can trigger recovery actions before your app silently freezes",
   "main": "index.js",
   "types": "index.d.ts",
