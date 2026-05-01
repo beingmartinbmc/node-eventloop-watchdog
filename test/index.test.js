@@ -1318,10 +1318,12 @@ suite('EventLoopMonitor', () => {
 
   test('config getter returns a copy', () => {
     const m = new EventLoopMonitor();
-    m.start({ warningThreshold: 77, logLevel: 'silent' });
+    m.start({ warningThreshold: 77, logLevel: 'silent', recovery: { enabled: true, action: 'log' } });
     const cfg = m.config;
     cfg.warningThreshold = 999;
+    cfg.recovery.action = 'kill';
     assert.strictEqual(m.config.warningThreshold, 77);
+    assert.strictEqual(m.config.recovery.action, 'log');
     m.stop();
   });
 
@@ -1581,6 +1583,24 @@ suite('Main API (index.js)', () => {
     assert.strictEqual(typeof instance.start, 'function');
     assert.strictEqual(typeof instance.stop, 'function');
     assert.strictEqual(instance.isRunning, false);
+  });
+
+  test('protect starts api with protect mode and returns api', () => {
+    const result = watchdog.protect({
+      recovery: {
+        action: 'log',
+        hardTimeout: 1000
+      }
+    });
+    assert.strictEqual(result, watchdog);
+    assert.strictEqual(watchdog.config.mode, 'protect');
+    watchdog.stop();
+  });
+
+  test('createProtectionConfig is exposed on main api', () => {
+    const config = watchdog.createProtectionConfig({ recovery: { action: 'log' } });
+    assert.strictEqual(config.mode, 'protect');
+    assert.strictEqual(config.recovery.action, 'log');
   });
 });
 
@@ -2268,6 +2288,210 @@ suite('index.js actuator error handling', () => {
     delete require.cache[actuatorPath];
     require.cache[indexPath] = origIndex;
     require.cache[actuatorPath] = origActuator;
+  });
+});
+
+// ============================================================
+// Recovery and protection mode
+// ============================================================
+
+suite('Recovery and protection mode', () => {
+  const EventLoopMonitor = require('../src/monitor');
+
+  test('createProtectionConfig returns opinionated recovery defaults', () => {
+    const config = EventLoopMonitor.createProtectionConfig();
+    assert.strictEqual(config.mode, 'protect');
+    assert.strictEqual(config.warningThreshold, 100);
+    assert.strictEqual(config.criticalThreshold, 500);
+    assert.strictEqual(config.recovery.enabled, true);
+    assert.strictEqual(config.recovery.action, 'kill');
+    assert.strictEqual(config.recovery.hardTimeout, 1000);
+  });
+
+  test('createProtectionConfig allows recovery overrides', () => {
+    const config = EventLoopMonitor.createProtectionConfig({
+      recovery: {
+        action: 'webhook',
+        webhookUrl: 'https://example.com/hook',
+        hardTimeout: 2000
+      }
+    });
+    assert.strictEqual(config.recovery.action, 'webhook');
+    assert.strictEqual(config.recovery.webhookUrl, 'https://example.com/hook');
+    assert.strictEqual(config.recovery.hardTimeout, 2000);
+  });
+
+  test('start in protect mode resolves recovery config', () => {
+    const m = new EventLoopMonitor();
+    m.start({
+      mode: 'protect',
+      logLevel: 'silent',
+      recovery: { action: 'log', hardTimeout: 1000 }
+    });
+    assert.strictEqual(m.config.mode, 'protect');
+    assert.strictEqual(m.config.recovery.enabled, true);
+    assert.strictEqual(m.config.recovery.action, 'log');
+    m.stop();
+  });
+
+  test('recovery false disables protect-mode recovery', () => {
+    const m = new EventLoopMonitor();
+    m.start({ mode: 'protect', logLevel: 'silent', recovery: false });
+    assert.strictEqual(m.config.recovery.enabled, false);
+    m.stop();
+  });
+
+  test('_describeAction returns log in observe mode', () => {
+    const m = new EventLoopMonitor();
+    m.start({ logLevel: 'silent' });
+    const action = m._describeAction({ severity: 'critical' });
+    assert.deepStrictEqual(action, { type: 'log', reason: 'observe-mode' });
+    m.stop();
+  });
+
+  test('_describeAction returns configured recovery action on matching severity', () => {
+    const m = new EventLoopMonitor();
+    m.start({
+      logLevel: 'silent',
+      recovery: { enabled: true, action: 'callback', minSeverity: 'warning' }
+    });
+    const action = m._describeAction({ severity: 'warning' });
+    assert.strictEqual(action.type, 'callback');
+    assert.strictEqual(action.reason, 'warning-threshold');
+    m.stop();
+  });
+
+  test('_runRecoveryAction invokes callback handler', () => {
+    const m = new EventLoopMonitor();
+    const seen = [];
+    m.start({
+      logLevel: 'silent',
+      recovery: {
+        enabled: true,
+        action: 'callback',
+        minSeverity: 'warning',
+        handler: event => seen.push(event.duration)
+      }
+    });
+    m._runRecoveryAction({ severity: 'warning', duration: 123 });
+    assert.deepStrictEqual(seen, [123]);
+    m.stop();
+  });
+
+  test('_runRecoveryAction logs callback errors', () => {
+    const m = new EventLoopMonitor();
+    const errors = [];
+    m.start({
+      logLevel: 'silent',
+      recovery: {
+        enabled: true,
+        action: 'callback',
+        minSeverity: 'warning',
+        handler: () => { throw new Error('handler boom'); }
+      }
+    });
+    m._logger = { error: (msg, data) => errors.push({ msg, data }), warn: () => {}, info: () => {} };
+    m._runRecoveryAction({ severity: 'warning', duration: 123 });
+    assert.ok(errors.some(e => e.msg.includes('Recovery handler error')));
+    m.stop();
+  });
+
+  test('_runRecoveryAction kill sends configured signal', () => {
+    const m = new EventLoopMonitor();
+    const originalKill = process.kill;
+    const calls = [];
+    process.kill = (pid, signal) => {
+      calls.push({ pid, signal });
+      return true;
+    };
+    m.start({
+      logLevel: 'silent',
+      recovery: {
+        enabled: true,
+        action: 'kill',
+        minSeverity: 'critical',
+        signal: 'SIGTERM'
+      }
+    });
+    m._runRecoveryAction({ severity: 'critical', duration: 500 });
+    process.kill = originalKill;
+    assert.deepStrictEqual(calls, [{ pid: process.pid, signal: 'SIGTERM' }]);
+    m.stop();
+  });
+
+  test('_sendWebhook reports missing webhookUrl', () => {
+    const m = new EventLoopMonitor();
+    const errors = [];
+    m._logger = { error: (msg, data) => errors.push({ msg, data }) };
+    m._sendWebhook({ severity: 'critical' }, null, 10);
+    assert.ok(errors.some(e => e.msg.includes('without webhookUrl')));
+  });
+
+  test('_sendWebhook reports invalid webhookUrl', () => {
+    const m = new EventLoopMonitor();
+    const errors = [];
+    m._logger = { error: (msg, data) => errors.push({ msg, data }) };
+    m._sendWebhook({ severity: 'critical' }, 'not a url', 10);
+    assert.ok(errors.some(e => e.msg.includes('Invalid recovery webhookUrl')));
+  });
+
+  test('_sendWebhook reports unsupported protocol', () => {
+    const m = new EventLoopMonitor();
+    const errors = [];
+    m._logger = { error: (msg, data) => errors.push({ msg, data }) };
+    m._sendWebhook({ severity: 'critical' }, 'ftp://example.com/hook', 10);
+    assert.ok(errors.some(e => e.msg.includes('Invalid recovery webhook protocol')));
+  });
+
+  test('_logBlockEvent includes configured action', () => {
+    const m = new EventLoopMonitor();
+    let captured = '';
+    m._logger = { warn: (msg) => { captured = msg; }, error: () => {}, info: () => {} };
+    m._logBlockEvent({
+      duration: 60,
+      severity: 'warning',
+      threshold: 50,
+      action: { type: 'callback', reason: 'warning-threshold' }
+    });
+    assert.ok(captured.includes('Action: callback'));
+  });
+});
+
+// ============================================================
+// HardWatchdog
+// ============================================================
+
+suite('HardWatchdog', () => {
+  const HardWatchdog = require('../src/hard-watchdog');
+
+  test('stop returns false when not running', () => {
+    const hardWatchdog = new HardWatchdog();
+    assert.strictEqual(hardWatchdog.stop(), false);
+  });
+
+  test('beat returns false when not running', () => {
+    const hardWatchdog = new HardWatchdog();
+    assert.strictEqual(hardWatchdog.beat(), false);
+  });
+
+  asyncTest('starts, accepts beats, and stops worker-backed watchdog', async () => {
+    const hardWatchdog = new HardWatchdog();
+    const started = hardWatchdog.start({
+      timeout: 1000,
+      checkInterval: 50,
+      action: 'log',
+      signal: 'SIGTERM',
+      name: 'test-watchdog'
+    });
+
+    assert.strictEqual(started, true);
+    assert.strictEqual(hardWatchdog.isRunning, true);
+    assert.strictEqual(hardWatchdog.beat(), true);
+
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.strictEqual(hardWatchdog.stop(), true);
+    assert.strictEqual(hardWatchdog.isRunning, false);
   });
 });
 
