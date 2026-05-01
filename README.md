@@ -1,17 +1,66 @@
 # node-eventloop-watchdog
 
-Detect when the Node.js event loop is lagging and capture best-effort context about what was happening when the lag was observed.
+<p align="center">
+  <strong>Node.js apps do not crash when they hang. They just stop responding.</strong><br>
+  <strong>node-eventloop-watchdog detects event loop stalls and can trigger recovery before production goes silent.</strong>
+</p>
 
-- Detect event loop lag
-- Capture stack context at detection time
-- Highlight likely blocking patterns
-- Correlate with HTTP requests
-- Zero runtime dependencies
+<p align="center">
+  <a href="https://www.npmjs.com/package/node-eventloop-watchdog"><img alt="npm" src="https://img.shields.io/npm/v/node-eventloop-watchdog.svg"></a>
+  <a href="https://www.npmjs.com/package/node-eventloop-watchdog"><img alt="downloads" src="https://img.shields.io/npm/dm/node-eventloop-watchdog.svg"></a>
+  <a href="https://github.com/beingmartinbmc/node-eventloop-watchdog/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/beingmartinbmc/node-eventloop-watchdog/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://www.npmjs.com/package/node-eventloop-watchdog"><img alt="node" src="https://img.shields.io/node/v/node-eventloop-watchdog.svg"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/npm/l/node-eventloop-watchdog.svg"></a>
+  <img alt="dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-brightgreen.svg">
+</p>
 
+## Why This Exists
+
+Most Node monitoring tells you the event loop is slow. That is useful, but it does not answer the production question:
+
+> If the event loop is blocked, then what happens?
+
+`node-eventloop-watchdog` is a small production safety layer for that exact moment. It can log, emit events, call your handler, post a webhook, exit, or terminate a stuck process so a supervisor such as Kubernetes, systemd, PM2, Docker, or a platform runtime can restart it.
+
+## What Makes It Different
+
+| Tool category | What it usually does | Limitation |
+|---|---|---|
+| Event loop metrics | Tracks lag, averages, percentiles | Tells you something is wrong, but does not act |
+| Native watchdogs | Kill or supervise the process | Often require native dependencies or separate setup |
+| Simple timers | Detect lag after the loop resumes | Cannot handle a loop that never comes back |
+| `node-eventloop-watchdog` | Detects stalls, adds context, and can act | Zero runtime dependencies, opt-in recovery |
+
+## Install
+
+```bash
+npm install node-eventloop-watchdog
 ```
-⚠ Event Loop Blocked
 
+CommonJS and bundled TypeScript declarations are included.
+
+```js
+const watchdog = require('node-eventloop-watchdog');
+```
+
+## Quick Start: Observe Mode
+
+Use `start()` when you want safe, backwards-compatible monitoring. It logs blocked event loop events and keeps history, metrics, hotspots, and request context.
+
+```js
+const watchdog = require('node-eventloop-watchdog');
+
+watchdog.start();
+```
+
+When a block crosses the threshold, you get a structured event:
+
+```text
+[node-eventloop-watchdog] [WARN] Event Loop Blocked
   Duration: 142ms
+  Severity: warning
+  Threshold: 50ms
+  Action: log
   Route: POST /checkout
 
   Suspected Blocking Operation
@@ -21,132 +70,199 @@ Detect when the Node.js event loop is lagging and capture best-effort context ab
   checkoutService.js:84
 ```
 
-## Important Attribution Note
+## Production Mode: Protect
 
-Lag is detected after the event loop resumes. That means stack traces, `location`, `userFrame`, and hotspots are best-effort context captured at detection time.
-
-They are useful for pattern hints, request correlation, and narrowing down suspicious areas, but they do not guarantee exact blame attribution for the original blocking line.
-
-## Blocking Hotspots
-
-Rank user-code locations seen in captured stack context when lag is observed.
-
-Results are best-effort and may be empty when no non-internal user frame is available.
-
-```js
-watchdog.getBlockingHotspots();
-// [
-//   { file: 'reportService.js', line: 142, blocks: 18, maxLag: 221, avgLag: 145 },
-//   { file: 'orderController.js', line: 51, blocks: 7, maxLag: 94, avgLag: 62 }
-// ]
-```
-
-## Install
-
-```bash
-npm install node-eventloop-watchdog
-```
-
-Bundled TypeScript types are included.
-
-## Quick Start
+Use `protect()` when you want opinionated production behavior. It enables recovery defaults designed for apps already managed by a process supervisor.
 
 ```js
 const watchdog = require('node-eventloop-watchdog');
 
-watchdog.start();
+watchdog.protect();
 ```
 
-Warnings are logged automatically when lag crosses the configured threshold.
+Default protection behavior:
 
-## Examples
+| Trigger | Default action |
+|---|---|
+| Event loop lag >= `100ms` | Log warning, record metrics, emit `block` event |
+| Event loop lag >= `500ms` | Mark event critical and terminate with `SIGTERM` |
+| Main event loop never resumes for `1000ms` | Worker-backed hard watchdog terminates with `SIGTERM` |
 
-```bash
-node examples/basic.js
-```
-
-```bash
-npm install express
-node examples/express.js
-```
-
-## Configuration
+The intended production pattern is simple: the watchdog terminates the unhealthy process, and your supervisor restarts it.
 
 ```js
-watchdog.start({
-  warningThreshold: 40,         // ms — warn when lag exceeds this
-  criticalThreshold: 100,       // ms — error when lag exceeds this
-  captureStackTrace: true,      // capture stack traces on block
-  historySize: 50,              // recent blocks to keep
-  enableMetrics: true,          // collect lag + memory metrics
-  detectBlockingPatterns: true, // detect JSON, sync fs, crypto, etc.
-  checkInterval: 20,            // ms — poll interval
-  logLevel: 'warn',             // debug | info | warn | error | silent
-  jsonLogs: false,              // structured JSON output
-  logger: null,                 // custom logger(level, message, data)
-  onBlock: null                 // callback(event) on every block
+watchdog.protect({
+  recovery: {
+    action: 'kill',
+    signal: 'SIGTERM',
+    hardTimeout: 1000
+  }
 });
 ```
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `warningThreshold` | number | `50` | Lag (ms) before warning |
-| `criticalThreshold` | number | `100` | Lag (ms) before critical alert |
-| `captureStackTrace` | boolean | `true` | Capture stack context on block |
-| `historySize` | number | `50` | Max blocking events retained |
-| `enableMetrics` | boolean | `true` | Collect lag metrics and memory snapshots |
-| `detectBlockingPatterns` | boolean | `true` | Detect known blocking patterns |
-| `checkInterval` | number | `20` | Poll interval (ms) |
-| `logLevel` | string | `'warn'` | Min log level |
-| `jsonLogs` | boolean | `false` | JSON log output |
-| `logger` | function | `null` | Custom logger function |
-| `onBlock` | function | `null` | Block event callback |
+## Brutal Demo
 
-When `enableMetrics` is `false`, lag and memory metrics are not collected. `getStats()` still returns runtime state, but lag-related fields are omitted.
+This demo intentionally freezes the main event loop forever. A normal timer-based monitor cannot recover from this because the timer callback never runs. `protect()` also starts a worker-backed hard watchdog, so the process can still be terminated.
+
+```bash
+node examples/brutal-demo.js
+```
+
+```js
+const watchdog = require('node-eventloop-watchdog');
+
+watchdog.protect({
+  criticalThreshold: 100,
+  recovery: {
+    enabled: true,
+    action: 'kill',
+    hardTimeout: 500,
+    signal: 'SIGTERM'
+  }
+});
+
+setTimeout(() => {
+  while (true) {}
+}, 2000);
+```
+
+Expected output:
+
+```text
+Watchdog armed. This process will freeze in 2 seconds.
+Expected result: the hard watchdog logs the stall and terminates the process.
+[node-eventloop-watchdog] [ERROR] Event loop hard-stalled for 500ms. Action: kill
+Terminated: 15
+```
+
+## Trigger To Action
+
+You can choose the action that matches your runtime:
+
+| Action | What happens | Good for |
+|---|---|---|
+| `log` | Record and log the event only | Local dev, dashboards, low-risk rollout |
+| `callback` | Call `recovery.handler(event)` | Custom alerting or diagnostics |
+| `webhook` | POST the event as JSON | Alertmanager, incident bots, automation |
+| `exit` | Stop the monitor and call `process.exit(exitCode)` | Graceful process-manager restart |
+| `kill` | Send a signal to the process | Kubernetes, systemd, PM2, Docker restart |
+| `abort` | Hard watchdog aborts the process | Core dumps and severe failure analysis |
+
+```js
+watchdog.start({
+  warningThreshold: 100,
+  criticalThreshold: 500,
+  recovery: {
+    enabled: true,
+    minSeverity: 'critical',
+    action: 'webhook',
+    webhookUrl: 'https://alerts.example.com/event-loop-block'
+  }
+});
+```
+
+```js
+watchdog.start({
+  recovery: {
+    enabled: true,
+    action: 'callback',
+    handler(event) {
+      pagerDuty.alert({
+        summary: `Event loop blocked for ${event.duration}ms`,
+        route: event.request?.route,
+        location: event.location
+      });
+    }
+  }
+});
+```
+
+## Real Problems This Solves
+
+- Infinite loops that leave a Node process alive but useless.
+- CPU-heavy synchronous code blocking requests.
+- Large JSON serialization or parsing on hot paths.
+- Synchronous filesystem, crypto, compression, or child-process calls in request handlers.
+- Stuck production servers that pass process liveness checks but stop serving traffic.
+- Incidents where you need recent block history, request correlation, and likely hotspots after recovery.
 
 ## API
 
 ### `watchdog.start(config?)`
 
-Start monitoring. Returns the watchdog instance for chaining.
+Starts observe mode. This is the safest default for adding visibility without changing process lifecycle behavior.
+
+```js
+watchdog.start({
+  warningThreshold: 50,
+  criticalThreshold: 100,
+  captureStackTrace: true,
+  historySize: 50,
+  enableMetrics: true,
+  detectBlockingPatterns: true,
+  checkInterval: 20,
+  logLevel: 'warn',
+  jsonLogs: false,
+  onBlock: null,
+  recovery: false
+});
+```
+
+### `watchdog.protect(config?)`
+
+Starts protect mode with opinionated recovery defaults.
+
+```js
+watchdog.protect({
+  warningThreshold: 100,
+  criticalThreshold: 500,
+  recovery: {
+    action: 'kill',
+    hardTimeout: 1000,
+    signal: 'SIGTERM'
+  }
+});
+```
 
 ### `watchdog.stop()`
 
-Stop monitoring.
+Stops monitoring and disables the hard watchdog worker.
+
+### `watchdog.on('block', listener)`
+
+Subscribe to block events.
+
+```js
+watchdog.on('block', (event) => {
+  console.log(event.duration, event.severity, event.action.type);
+});
+```
 
 ### `watchdog.getStats()`
+
+Returns runtime state, lag metrics, memory snapshot, and active mode.
 
 ```js
 watchdog.getStats();
 // {
-//   avgLag: 12, maxLag: 121, minLag: 1,
-//   totalBlocks: 14, blocksLastMinute: 6,
-//   uptime: 3600, running: true,
-//   memory: { heapUsed: 412, heapTotal: 512, rss: 580, external: 12, arrayBuffers: 2 }
+//   avgLag: 12,
+//   maxLag: 121,
+//   minLag: 1,
+//   totalBlocks: 14,
+//   blocksLastMinute: 6,
+//   running: true,
+//   config: { mode: 'protect', warningThreshold: 100, criticalThreshold: 500, recoveryAction: 'kill' },
+//   memory: { heapUsed: 42, heapTotal: 64, rss: 91, external: 2, arrayBuffers: 1 }
 // }
 ```
 
-When `enableMetrics` is `false`, lag fields and memory snapshots are omitted.
-
 ### `watchdog.getRecentBlocks(count?)`
 
-```js
-watchdog.getRecentBlocks(5);
-// [
-//   {
-//     duration: 84,
-//     severity: 'warning',
-//     location: 'checkoutService.js:84',
-//     suspectedOperation: 'JSON.stringify',
-//     request: { route: 'POST /checkout', requestId: 'req_92KxS' },
-//     memory: { heapUsed: 412, heapTotal: 512, rss: 580 }
-//   }
-// ]
-```
+Returns the most recent blocking events.
 
 ### `watchdog.getBlockingHotspots(limit?)`
 
-Best-effort hotspot ranking from captured stack context.
+Returns best-effort user-code locations captured when blocks were detected.
 
 ```js
 watchdog.getBlockingHotspots();
@@ -156,51 +272,9 @@ watchdog.getBlockingHotspots();
 // ]
 ```
 
-### `watchdog.getHistory()`
-
-Full blocking event history.
-
-### `watchdog.reset()`
-
-Clear all history, hotspots, and metrics.
-
 ### `watchdog.middleware()`
 
-Return Connect / Express-style middleware for request correlation.
-
-### `watchdog.on(event, listener)` / `watchdog.off(event, listener)`
-
-Subscribe or unsubscribe to `'block'` events.
-
-```js
-watchdog.on('block', (event) => {
-  alerting.notify('event-loop-block', event);
-});
-```
-
-### `watchdog.createInspector()`
-
-Create an independent instance instead of using the singleton.
-
-```js
-const custom = watchdog.createInspector();
-custom.start({ warningThreshold: 100 });
-```
-
-## Blocking Pattern Hints
-
-Identifies likely blocking patterns from captured stack context:
-
-| Pattern | Category |
-|---|---|
-| `JSON.stringify` / `JSON.parse` | Serialization |
-| `fs.readFileSync`, `fs.writeFileSync`, etc. | Sync FS |
-| `crypto.pbkdf2Sync`, `crypto.scryptSync` | Sync Crypto |
-| `zlib.*Sync` | Sync Compression |
-| `child_process.execSync`, `spawnSync` | Sync Exec |
-| `RegExp.exec` | Regex Backtracking |
-
-## Request Correlation Middleware
+Returns Connect / Express-style middleware for request correlation.
 
 ```js
 const express = require('express');
@@ -216,29 +290,64 @@ app.post('/checkout', (req, res) => {
 });
 ```
 
-The bundled middleware is Connect / Express-style.
+## Configuration
 
-For Fastify, Koa, or native `http`, use an adapter or a separate request-correlation layer.
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `'observe' \| 'protect'` | `'observe'` | Runtime posture |
+| `warningThreshold` | number | `50` | Lag in ms before warning |
+| `criticalThreshold` | number | `100` | Lag in ms before critical event |
+| `captureStackTrace` | boolean | `true` | Capture best-effort stack context |
+| `historySize` | number | `50` | Max blocking events retained |
+| `enableMetrics` | boolean | `true` | Collect lag and memory metrics |
+| `detectBlockingPatterns` | boolean | `true` | Identify likely sync blocking patterns |
+| `checkInterval` | number | `20` | Poll interval in ms |
+| `logLevel` | string | `'warn'` | `debug`, `info`, `warn`, `error`, or `silent` |
+| `jsonLogs` | boolean | `false` | Emit JSON logs |
+| `onBlock` | function | `null` | Callback for every block |
+| `recovery.enabled` | boolean | `false` | Enable recovery actions |
+| `recovery.action` | string | `'log'` | `log`, `callback`, `webhook`, `exit`, `kill`, or `abort` |
+| `recovery.minSeverity` | string | `'critical'` | Minimum severity before action runs |
+| `recovery.hardTimeout` | number | `0` | Worker-backed timeout for never-returning stalls |
+| `recovery.signal` | string | `'SIGTERM'` | Signal for `kill` action |
+| `recovery.exitCode` | number | `1` | Exit code for `exit` action |
+| `recovery.webhookUrl` | string | `null` | URL for `webhook` action |
+| `recovery.handler` | function | `null` | Function for `callback` action |
 
-## Integration with node-request-trace
+## Blocking Pattern Hints
 
-If [node-request-trace](https://www.npmjs.com/package/node-request-trace) is installed, blocking events are automatically correlated with the active request with no extra setup.
+The watchdog looks for common synchronous patterns in captured stack context:
+
+| Pattern | Category |
+|---|---|
+| `JSON.stringify` / `JSON.parse` | Serialization |
+| `fs.readFileSync`, `fs.writeFileSync`, etc. | Sync filesystem |
+| `crypto.pbkdf2Sync`, `crypto.scryptSync`, `crypto.createHash` | Sync crypto |
+| `zlib.*Sync` | Sync compression |
+| `child_process.execSync`, `spawnSync` | Sync child process |
+| `RegExp.exec` | Regex backtracking |
+
+## Important Attribution Note
+
+Timer-based lag detection runs after the event loop resumes. Stack traces, `location`, `userFrame`, and hotspots are therefore best-effort context captured around detection time, not guaranteed blame for the exact blocking line.
+
+For a loop that never resumes, enable `recovery.hardTimeout` through `protect()` or explicit recovery config. The hard watchdog runs in a worker thread and can terminate the process even when the main event loop is permanently stuck.
+
+## Integrations
+
+### JSON Logs
 
 ```js
-// Blocking events include:
-// {
-//   request: {
-//     requestId: 'req_92KxS',
-//     route: 'GET /users',
-//     method: 'GET',
-//     userId: '83921'
-//   }
-// }
+watchdog.start({ jsonLogs: true });
 ```
 
-## Integration with node-actuator-lite
+### node-request-trace
 
-If [node-actuator-lite](https://www.npmjs.com/package/node-actuator-lite) is installed, endpoints are registered automatically:
+If `node-request-trace` is installed, active request data is automatically attached to block events.
+
+### node-actuator-lite
+
+If `node-actuator-lite` is installed, these endpoints are registered automatically:
 
 | Endpoint | Description |
 |---|---|
@@ -247,78 +356,25 @@ If [node-actuator-lite](https://www.npmjs.com/package/node-actuator-lite) is ins
 | `GET /actuator/eventloop/hotspots` | Hotspot ranking |
 | `GET /actuator/eventloop/metrics` | Lag and memory metrics |
 
-## JSON Logging
+## Operational Guidance
 
-```js
-watchdog.start({ jsonLogs: true });
+- Use `start()` first when rolling out to an existing app.
+- Use `protect()` when the app runs under a supervisor that restarts failed processes.
+- Keep `hardTimeout` comfortably above normal CPU spikes to avoid killing legitimate long work.
+- Prefer `SIGTERM` for graceful runtime restarts; use `abort` only when you need crash diagnostics.
+- Run `npm run bench` in your own workload if overhead matters.
+
+## Development
+
+```bash
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run test:coverage:check
 ```
 
-```json
-{
-  "level": "warn",
-  "message": "⚠ Event Loop Blocked\n  Duration: 92ms\n  Severity: warning",
-  "timestamp": 1710002231,
-  "type": "event-loop-block",
-  "duration": 92,
-  "route": "/orders"
-}
-```
-
-### Custom Logger
-
-```js
-watchdog.start({
-  logger: (level, message, data) => {
-    myLogger[level](message, data);
-  }
-});
-```
-
-## Event Listener
-
-```js
-watchdog.on('block', (event) => {
-  if (event.severity === 'critical') {
-    pagerDuty.alert({
-      summary: `Event loop blocked ${event.duration}ms`,
-      source: event.location,
-      route: event.request?.route
-    });
-  }
-});
-```
-
-## Production Config
-
-```js
-watchdog.start({
-  warningThreshold: 100,
-  criticalThreshold: 500,
-  captureStackTrace: false,
-  historySize: 20,
-  enableMetrics: true,
-  detectBlockingPatterns: false,
-  checkInterval: 50,
-  logLevel: 'error'
-});
-```
-
-## Operational Notes
-
-- Timer-based polling with no monkey-patching
-- Bounded history and lag sample buffers
-- Zero runtime dependencies
-- Unref'd timers do not keep the process alive
-- Overhead depends on workload and config
-- Run `npm run bench` to measure overhead in your environment
-
-## Compatibility
-
-- **Node.js** >= 16.0.0
-- **Core monitoring** works in any Node.js app
-- **Bundled middleware** is Connect / Express-style
-- **Fastify, Koa, and native `http`** need adapters if you want request correlation
-- **OS** Linux, macOS, Windows
+The CI gate requires at least 90% coverage across statements, branches, functions, and lines.
 
 ## License
 
