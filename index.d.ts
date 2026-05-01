@@ -1,6 +1,8 @@
 declare namespace watchdog {
   type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
   type BlockSeverity = 'warning' | 'critical';
+  type WatchdogMode = 'observe' | 'protect';
+  type RecoveryAction = 'log' | 'callback' | 'webhook' | 'exit' | 'kill' | 'abort';
 
   interface StackFrame {
     function: string;
@@ -34,11 +36,18 @@ declare namespace watchdog {
     arrayBuffers: number;
   }
 
+  interface RecoveryEventAction {
+    type: RecoveryAction;
+    reason: string;
+    hardTimeout?: number;
+  }
+
   interface BlockEvent {
     duration: number;
     threshold: number;
     severity: BlockSeverity;
     timestamp: string;
+    action: RecoveryEventAction;
     stackTrace?: StackFrame[];
     location?: string | null;
     userFrame?: StackFrame | null;
@@ -49,7 +58,20 @@ declare namespace watchdog {
     memory?: MemorySnapshot;
   }
 
+  interface RecoveryConfig {
+    enabled?: boolean;
+    action?: RecoveryAction;
+    minSeverity?: BlockSeverity;
+    hardTimeout?: number;
+    signal?: string;
+    exitCode?: number;
+    webhookUrl?: string | null;
+    webhookTimeout?: number;
+    handler?: ((event: BlockEvent) => void) | null;
+  }
+
   interface WatchdogConfig {
+    mode?: WatchdogMode;
     warningThreshold?: number;
     criticalThreshold?: number;
     captureStackTrace?: boolean;
@@ -61,9 +83,11 @@ declare namespace watchdog {
     logLevel?: LogLevel;
     jsonLogs?: boolean;
     onBlock?: ((event: BlockEvent) => void) | null;
+    recovery?: boolean | RecoveryConfig;
   }
 
   interface ResolvedWatchdogConfig {
+    mode: WatchdogMode;
     warningThreshold: number;
     criticalThreshold: number;
     captureStackTrace: boolean;
@@ -75,6 +99,10 @@ declare namespace watchdog {
     logLevel: LogLevel;
     jsonLogs: boolean;
     onBlock: ((event: BlockEvent) => void) | null;
+    recovery: Required<Omit<RecoveryConfig, 'handler' | 'webhookUrl'>> & {
+      handler: ((event: BlockEvent) => void) | null;
+      webhookUrl: string | null;
+    };
   }
 
   interface WatchdogStats {
@@ -88,6 +116,8 @@ declare namespace watchdog {
     config: {
       warningThreshold: number;
       criticalThreshold: number;
+      mode: WatchdogMode;
+      recoveryAction: RecoveryAction;
     };
     memory?: MemorySnapshot;
   }
@@ -119,7 +149,9 @@ declare namespace watchdog {
 
   interface EventLoopWatchdog extends Omit<WatchdogInspector, 'reset'> {
     reset(): EventLoopWatchdog;
+    protect(config?: WatchdogConfig): EventLoopWatchdog;
     createInspector(): WatchdogInspector;
+    createProtectionConfig(config?: WatchdogConfig): ResolvedWatchdogConfig;
   }
 }
 
