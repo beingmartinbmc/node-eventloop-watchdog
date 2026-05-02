@@ -11,8 +11,7 @@ function registerActuatorEndpoints(inspector) {
 
   if (!actuator || !actuator.registerEndpoint) return false;
 
-  // GET /actuator/eventloop
-  actuator.registerEndpoint('/actuator/eventloop', () => {
+  registerEndpoint(actuator, 'eventloop', () => {
     const stats = inspector.getStats();
     const hotspots = inspector.getBlockingHotspots();
     return {
@@ -26,24 +25,21 @@ function registerActuatorEndpoints(inspector) {
     };
   });
 
-  // GET /actuator/eventloop/history
-  actuator.registerEndpoint('/actuator/eventloop/history', () => {
+  registerEndpoint(actuator, 'eventloop/history', () => {
     return {
       status: 'ok',
       recentBlocks: inspector.getRecentBlocks()
     };
   });
 
-  // GET /actuator/eventloop/hotspots
-  actuator.registerEndpoint('/actuator/eventloop/hotspots', () => {
+  registerEndpoint(actuator, 'eventloop/hotspots', () => {
     return {
       status: 'ok',
       hotspots: inspector.getBlockingHotspots()
     };
   });
 
-  // GET /actuator/eventloop/metrics
-  actuator.registerEndpoint('/actuator/eventloop/metrics', () => {
+  registerEndpoint(actuator, 'eventloop/metrics', () => {
     const stats = inspector.getStats();
     return {
       status: 'ok',
@@ -58,6 +54,14 @@ function registerActuatorEndpoints(inspector) {
   });
 
   return true;
+}
+
+function registerEndpoint(actuator, id, handler) {
+  if (actuator.registerEndpoint.length <= 1) {
+    actuator.registerEndpoint({ id, method: 'GET', handler });
+    return;
+  }
+  actuator.registerEndpoint(`/actuator/${id}`, handler);
 }
 
 module.exports = { registerActuatorEndpoints };
