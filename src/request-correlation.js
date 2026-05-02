@@ -59,9 +59,7 @@ class RequestCorrelation {
     // Try node-request-trace integration
     if (this._nodeRequestTrace) {
       try {
-        const trace = this._nodeRequestTrace.getCurrentTrace
-          ? this._nodeRequestTrace.getCurrentTrace()
-          : null;
+        const trace = this._getNodeRequestTraceContext();
         if (trace) {
           return {
             requestId: trace.requestId || trace.id,
@@ -75,6 +73,19 @@ class RequestCorrelation {
       }
     }
 
+    return null;
+  }
+
+  _getNodeRequestTraceContext() {
+    if (typeof this._nodeRequestTrace.getCurrentRequestContext === 'function') {
+      return this._nodeRequestTrace.getCurrentRequestContext();
+    }
+    if (typeof this._nodeRequestTrace.getCurrentTrace === 'function') {
+      return this._nodeRequestTrace.getCurrentTrace();
+    }
+    if (typeof this._nodeRequestTrace.current === 'function') {
+      return this._nodeRequestTrace.current();
+    }
     return null;
   }
 
