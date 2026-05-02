@@ -895,7 +895,7 @@ suite('RequestCorrelation', () => {
     rc.enable();
     // Simulate node-request-trace being available
     rc._nodeRequestTrace = {
-      getCurrentTrace: () => ({
+      getCurrentRequestContext: () => ({
         requestId: 'nrt-1',
         route: '/users',
         method: 'GET',
@@ -907,6 +907,23 @@ suite('RequestCorrelation', () => {
     assert.strictEqual(ctx.route, '/users');
     assert.strictEqual(ctx.method, 'GET');
     assert.strictEqual(ctx.userId, 'u1');
+    rc.disable();
+  });
+
+  test('getCurrentContext supports node-request-trace current() fallback', () => {
+    const rc = new RequestCorrelation();
+    rc.enable();
+    rc._nodeRequestTrace = {
+      current: () => ({
+        requestId: 'current-id',
+        path: '/current-path',
+        method: 'PATCH'
+      })
+    };
+    const ctx = rc.getCurrentContext();
+    assert.strictEqual(ctx.requestId, 'current-id');
+    assert.strictEqual(ctx.route, '/current-path');
+    assert.strictEqual(ctx.method, 'PATCH');
     rc.disable();
   });
 
@@ -1700,7 +1717,7 @@ suite('Actuator (mock success path)', () => {
   test('registers all endpoints when actuator module is available', () => {
     const endpoints = {};
     const mockActuator = {
-      registerEndpoint: (path, handler) => { endpoints[path] = handler; }
+      registerEndpoint: (endpoint) => { endpoints[endpoint.id] = endpoint.handler; }
     };
 
     // Temporarily mock require for node-actuator-lite
@@ -1733,25 +1750,25 @@ suite('Actuator (mock success path)', () => {
     assert.strictEqual(result, true);
 
     // Verify all 4 endpoints registered
-    assert.ok(endpoints['/actuator/eventloop']);
-    assert.ok(endpoints['/actuator/eventloop/history']);
-    assert.ok(endpoints['/actuator/eventloop/hotspots']);
-    assert.ok(endpoints['/actuator/eventloop/metrics']);
+    assert.ok(endpoints.eventloop);
+    assert.ok(endpoints['eventloop/history']);
+    assert.ok(endpoints['eventloop/hotspots']);
+    assert.ok(endpoints['eventloop/metrics']);
 
     // Invoke each endpoint handler to cover the callback code
-    const statusResult = endpoints['/actuator/eventloop']();
+    const statusResult = endpoints.eventloop();
     assert.strictEqual(statusResult.status, 'ok');
     assert.strictEqual(statusResult.avgLag, 10);
     assert.ok(Array.isArray(statusResult.hotspots));
 
-    const historyResult = endpoints['/actuator/eventloop/history']();
+    const historyResult = endpoints['eventloop/history']();
     assert.strictEqual(historyResult.status, 'ok');
     assert.ok(Array.isArray(historyResult.recentBlocks));
 
-    const hotspotsResult = endpoints['/actuator/eventloop/hotspots']();
+    const hotspotsResult = endpoints['eventloop/hotspots']();
     assert.strictEqual(hotspotsResult.status, 'ok');
 
-    const metricsResult = endpoints['/actuator/eventloop/metrics']();
+    const metricsResult = endpoints['eventloop/metrics']();
     assert.strictEqual(metricsResult.status, 'ok');
     assert.strictEqual(metricsResult.avgLag, 10);
 
@@ -1790,6 +1807,50 @@ suite('Actuator (mock success path)', () => {
 
     Module._resolveFilename = origResolve;
     delete require.cache['node-actuator-lite'];
+    delete require.cache[actuatorPath];
+    require('../src/actuator');
+  });
+
+  test('supports legacy path and handler actuator registration', () => {
+    const endpoints = {};
+    const mockActuator = {
+      registerEndpoint: (path, handler) => { endpoints[path] = handler; }
+    };
+
+    const Module = require('module');
+    const origResolve = Module._resolveFilename;
+    Module._resolveFilename = function (request, parent) {
+      if (request === 'node-actuator-lite') return 'node-actuator-lite';
+      return origResolve.call(this, request, parent);
+    };
+    const origCache = require.cache['node-actuator-lite'];
+    require.cache['node-actuator-lite'] = {
+      id: 'node-actuator-lite',
+      filename: 'node-actuator-lite',
+      loaded: true,
+      exports: mockActuator
+    };
+
+    const actuatorPath = require.resolve('../src/actuator');
+    delete require.cache[actuatorPath];
+    const { registerActuatorEndpoints: freshRegister } = require('../src/actuator');
+
+    const inspector = {
+      getStats: () => ({ avgLag: 1, maxLag: 2, blocksLastMinute: 0, totalBlocks: 0, uptime: 10, minLag: 0, memory: {} }),
+      getRecentBlocks: () => [],
+      getBlockingHotspots: () => []
+    };
+
+    assert.strictEqual(freshRegister(inspector), true);
+    assert.ok(endpoints['/actuator/eventloop']);
+    assert.strictEqual(endpoints['/actuator/eventloop']().status, 'ok');
+
+    Module._resolveFilename = origResolve;
+    if (origCache) {
+      require.cache['node-actuator-lite'] = origCache;
+    } else {
+      delete require.cache['node-actuator-lite'];
+    }
     delete require.cache[actuatorPath];
     require('../src/actuator');
   });
