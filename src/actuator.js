@@ -57,11 +57,14 @@ function registerActuatorEndpoints(inspector) {
 }
 
 function registerEndpoint(actuator, id, handler) {
-  if (actuator.registerEndpoint.length <= 1) {
-    actuator.registerEndpoint({ id, method: 'GET', handler });
-    return;
-  }
-  actuator.registerEndpoint(`/actuator/${id}`, handler);
+  // Always use the object-style registration. node-actuator-lite >= 3.2.0
+  // accepts both the object form `{ id, method, handler }` and the
+  // `(id, handler)` path form, but the path form prefixes the basePath
+  // (e.g. `/actuator/eventloop`), and the actuator's own normaliser only
+  // strips leading slashes — leaving an `actuator/eventloop` id that does
+  // not match the runtime lookup of `eventloop`. The object form bypasses
+  // that ambiguity entirely.
+  actuator.registerEndpoint({ id, method: 'GET', handler });
 }
 
 module.exports = { registerActuatorEndpoints };
