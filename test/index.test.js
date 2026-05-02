@@ -1811,10 +1811,16 @@ suite('Actuator (mock success path)', () => {
     require('../src/actuator');
   });
 
-  test('supports legacy path and handler actuator registration', () => {
-    const endpoints = {};
+  test('always registers endpoints with the bare id, not a path-prefixed id', () => {
+    // Regression: the watchdog used to fall back to a path-form
+    // `actuator.registerEndpoint('/actuator/eventloop', handler)` when the
+    // exported function had arity > 1, but node-actuator-lite's id
+    // normaliser only strips leading slashes — leaving `actuator/eventloop`
+    // and breaking runtime lookup. We now always use the object form.
+    const calls = [];
     const mockActuator = {
-      registerEndpoint: (path, handler) => { endpoints[path] = handler; }
+      // arity 2 — would have triggered the legacy path-form previously
+      registerEndpoint: (a, b) => { calls.push({ a, b }); }
     };
 
     const Module = require('module');
@@ -1842,8 +1848,22 @@ suite('Actuator (mock success path)', () => {
     };
 
     assert.strictEqual(freshRegister(inspector), true);
-    assert.ok(endpoints['/actuator/eventloop']);
-    assert.strictEqual(endpoints['/actuator/eventloop']().status, 'ok');
+    assert.strictEqual(calls.length, 4);
+    for (const { a, b } of calls) {
+      assert.strictEqual(typeof a, 'object', 'first arg must be an endpoint object');
+      assert.strictEqual(b, undefined, 'second arg must be unused');
+      assert.strictEqual(a.method, 'GET');
+      assert.strictEqual(typeof a.handler, 'function');
+      assert.ok(!a.id.startsWith('/'), `id must not start with slash, got ${a.id}`);
+      assert.ok(!a.id.startsWith('actuator/'), `id must not be path-prefixed, got ${a.id}`);
+    }
+    const ids = calls.map((c) => c.a.id).sort();
+    assert.deepStrictEqual(ids, [
+      'eventloop',
+      'eventloop/history',
+      'eventloop/hotspots',
+      'eventloop/metrics',
+    ]);
 
     Module._resolveFilename = origResolve;
     if (origCache) {
