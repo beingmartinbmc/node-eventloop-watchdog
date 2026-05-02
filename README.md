@@ -31,6 +31,21 @@ Most Node monitoring tells you the event loop is slow. That is useful, but it do
 | Simple timers | Detect lag after the loop resumes | Cannot handle a loop that never comes back |
 | `node-eventloop-watchdog` | Detects stalls, adds context, and can act | Zero runtime dependencies, opt-in recovery |
 
+## Ecosystem
+
+`node-eventloop-watchdog` is part of a small Node.js observability ecosystem you can adopt independently or together:
+
+- [`node-actuator-lite`](https://github.com/beingmartinbmc/node-actuator-lite) — Spring Boot-style `/actuator/health`, `/info`, `/metrics`, `/env`, `/threaddump`, `/heapdump`, and `/prometheus` endpoints.
+- **`node-eventloop-watchdog`** — Detects event-loop stalls, captures stack traces and hotspots, and triggers recovery.
+- [`node-request-trace`](https://github.com/beingmartinbmc/node-request-trace) — Per-request timelines, browser dashboard, and CLI without OpenTelemetry.
+
+When all three are installed:
+
+- This watchdog automatically registers `/actuator/eventloop`, `/actuator/eventloop/history`, `/actuator/eventloop/hotspots`, and `/actuator/eventloop/metrics` under `node-actuator-lite`.
+- Block events include the active request id, route, and method captured by `node-request-trace`.
+
+Runnable example: [`node-actuator-lite/examples/ecosystem`](https://github.com/beingmartinbmc/node-actuator-lite/tree/main/examples/ecosystem).
+
 ## Install
 
 ```bash
